@@ -106,41 +106,6 @@ lp, lg, m, st = training.train(model=model, train_dataloader=dataloader, epochs=
                                        steps_til_summary=opt.steps_til_summary, epochs_til_checkpoint=opt.epochs_til_ckpt,
                                        model_dir=output_dir, data_shape=data_shape, loss_fn=loss)
 
-# log_pred.append(lp)
-# log_gt.append(lg)
-# mae.append(m)
-# std.append(st)
-
-# plot mae and std for each slice
-# x = np.arange(0, len(m))
-# fig, ax = plt.subplots()
-# fig3, ax3 = plt.subplots()
-
-# ax.plot(x, m, label='Mean Absolute Error')
-# ax.set_xlabel('X-slice')
-# ax.set_title('MAE for each X-Slice')
-# fig.savefig(output_dir+'/mae.png', dpi=300, bbox_inches='tight', facecolor='w')
-# plt.close()
-
-# ax3.plot(x, st, label='Standard Dev')
-# ax3.set_xlabel('X-slice')
-# ax3.set_title('STD for each X-Slice')
-# fig3.savefig(output_dir+'/std.png', dpi=300, bbox_inches='tight', facecolor='w')
-# plt.close()
-
-
-# fig2, ax2 = plt.subplots()
-# plot pred vs gt for each slice
-# for i in range(len(log_pred)):
-#     ax2.scatter(log_gt[i], log_pred[i])
-# ax2.set_xlabel('Truth')
-# ax2.set_ylabel('Pred')
-# ax2.set_xlim(-1,17)
-# ax2.set_ylim(-1,17)
-# ax2.grid(True)
-# fig2.savefig(output_dir+'/tot_pred_vs_truth.png', dpi=300, bbox_inches='tight', facecolor='w')
-# plt.close()
-
 
 end = time.time()
 print('Delta Time: {}'.format(end-start))
