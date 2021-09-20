@@ -24,10 +24,7 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
         if val == 'y':
             filename = utils.find_latest_checkpoint(model_dir)
             model, optim, epoch_start, train_losses =  utils.load_checkpoint(model, optim, filename)
-            if val == 'n':
-                val = input("Would you prefer to overwrite {}? (y/n)" % model_dir)
-                if val == 'y':
-                    shutil.rmtree(model_dir)
+            
 
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
@@ -46,7 +43,7 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
     for epoch in range(epoch_start, epochs):
         if not epoch % epochs_til_checkpoint and epoch:
             print('epoch:', epoch )
-
+        
             torch.save({
                         'epoch': epoch,
                         'model_state_dict': model.state_dict(),
@@ -56,51 +53,59 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
         
             np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % epoch),
                        np.array(train_losses))
-
+            
+       
         for step, (model_input, gt) in enumerate(train_dataloader):
             start_time = time.time()
-            
-            
+
             model_input = {key: value.cuda() for key, value in model_input.items()}
-
-            model_output = model(model_input['coords'])
-            
-            # Smooth every 1000 steps
-#             if not step%1000-500:
-#                 model_output['model_out'] = utils.attach_tensor(utils.box_blur(utils.detach_tensor(mdoel_output, data_shape)))
-            
-            losses = loss_fn(model_output, gt)
-    
             train_loss = 0.
-            for loss_name, loss in losses.items():
-                single_loss = loss.mean()
 
-                if loss_schedules is not None and loss_name in loss_schedules:
-                    writer.add_scalar(loss_name + "_weight", loss_schedules[loss_name](total_steps), total_steps)
-                    single_loss *= loss_schedules[loss_name](total_steps)
+            # start minibatching
+            minibatch_size = int(74/2) # number of slices to send at a time, must be integer multuple of data_shape[0] = 74
 
-                writer.add_scalar(loss_name, single_loss, total_steps)
-                train_loss += single_loss
+            # flattened detector with shape (1, 74*77*394, 3)
+            slice_size = data_shape[1]*data_shape[2]
+            num_batches = int( model_input['coords'].size(1) / (minibatch_size*slice_size))
+            for mini in range(num_batches):
 
-            train_losses.append(train_loss.item())
-            writer.add_scalar("total_train_loss", train_loss, total_steps)
+                batch_model_in = model_input['coords'][:, slice_size*mini*minibatch_size:slice_size*(mini+1)*minibatch_size, :]
+                batch_gt = gt['coords'][:, :, slice_size*mini*minibatch_size:slice_size*(mini+1)*minibatch_size, :]
 
-            if not total_steps % steps_til_summary:
-                torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optim.state_dict(),
-                        'loss': train_losses,
-                        },  os.path.join(checkpoints_dir, 'model_current.pth'))
+                model_output = model(batch_model_in)
 
+                losses = loss_fn(model_output, batch_gt)
 
-            optim.zero_grad()
-            train_loss.retain_grad()
-            train_loss.backward()
-#             torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-            optim.step()
+                for loss_name, loss in losses.items():
+                    single_loss = loss.mean()
 
-            total_steps += 1
+                    if loss_schedules is not None and loss_name in loss_schedules:
+                        writer.add_scalar(loss_name + "_weight", loss_schedules[loss_name](total_steps), total_steps)
+                        single_loss *= loss_schedules[loss_name](total_steps)
+
+                    writer.add_scalar(loss_name, single_loss, total_steps)
+                    train_loss += single_loss
+
+                    train_losses.append(train_loss.item())
+                    writer.add_scalar("total_train_loss", train_loss, total_steps)
+
+            train_loss = torch.sum(train_loss)
+            
+        if not total_steps % steps_til_summary:
+            torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optim.state_dict(),
+                    'loss': train_losses,
+                    },  os.path.join(checkpoints_dir, 'model_current.pth'))
+
+        optim.zero_grad()
+        train_loss.retain_grad()
+        train_loss.backward(retain_graph=True)
+        optim.step()
+
+        total_steps += 1
+
 
     torch.save(model.state_dict(),
                os.path.join(checkpoints_dir, 'model_final.pth'))
@@ -109,28 +114,38 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
     
     # TODO: migrate to utils file
     #Plot and save loss
-    x_steps = np.linspace(0, total_steps, num=total_steps)
+    x_steps = np.linspace(0, len(train_losses), num=len(train_losses))
+
     plt.figure(tight_layout=True)
     plt.plot(x_steps, train_losses)
     plt.ylabel('Loss')
     plt.yscale('log')
     plt.xlabel('Iteration')
     plt_name = os.path.join(model_dir, 'total_loss.png')
-    plt.savefig(plt_name, dpi=300, bbox_inches='tight')
+    plt.savefig(plt_name, dpi=300, bbox_inches='tight', facecolor='w')
     plt.clf()
     
 
-    # Make images
+    # Make images                       
+    model_output = model(model_input['coords'])
     ground_truth_video = np.reshape(
           gt['coords'].cpu().detach().numpy(), 
           (data_shape[0], data_shape[1], data_shape[2], -1)
         )
+    ground_truth_video = ground_truth_video[:,:,:,0]
+    
     predict_video = np.reshape(
             model_output['model_out'].cpu().detach().numpy(), 
             (data_shape[0], data_shape[1], data_shape[2], -1)
         )
+    predict_video = predict_video[:,:,:,0]
     
     # Plot pred plots
+    log_gt = []
+    log_pred = []
+    d = []
+    st = []
+    
     for step in range(predict_video.shape[0]):
     #Plot y pred vs gt
         pred = (predict_video[step]-predict_video[step].min())/(predict_video[step].max()-predict_video[step].min())
@@ -138,18 +153,24 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
         plt.scatter(-np.log(ground_truth_video[step]+1e-7), -np.log(predict_video[step]+1e-7))        
         plt.xlabel('Truth')
         plt.ylabel('Pred')
-        plt_name = os.path.join(model_dir, 'pred_vs_truth.png')
-        plt.savefig(plt_name, dpi=300, bbox_inches='tight')
+        plt.xlim(-1,17)
+        plt.ylim(-1,17)
+        plt.grid(True)
+        plt_name = os.path.join(model_dir, '{:05d}_pred_vs_truth.png'.format(step))
+        plt.savefig(plt_name, dpi=300, bbox_inches='tight', facecolor='w')
         plt.clf()
-
+        
+        log_gt.append(-np.log(ground_truth_video[step]+1e-7))
+        log_pred.append(-np.log(predict_video[step]+1e-7))
+        
         # Histogram of value overlaps
         plt.hist(pred.flatten(), alpha=0.5, label='predicted')
         plt.hist(ground_truth_video[step].flatten(), alpha=0.5, label='ground truth')
         plt.xlabel('Normalized Values')
         plt.ylabel('Count')
         plt.legend(loc='upper right')
-        plt_name = os.path.join(model_dir, 'histogram.png')
-        plt.savefig(plt_name)
+        plt_name = os.path.join(model_dir, '{:05d}_histogram.png'.format(step))
+        plt.savefig(plt_name, facecolor='w')
         plt.clf()
         
         # Normalized histogram
@@ -158,11 +179,17 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
         plt.xlabel('asymmetry')
         plt.ylabel('samples')
         plt.yscale('log')
-        plt_name = os.path.join(model_dir, 'asym.png')
-        plt.savefig(plt_name)
+        plt_name = os.path.join(model_dir, '{:05d}_asym.png'.format(step))
+        plt.savefig(plt_name, facecolor='w')
         plt.clf()
+        plt.close()
         
-    diff = np.sum(abs(ground_truth_video - predict_video), axis=(1,2,3))
+        d.append(np.sum(abs(ground_truth_video[step] - predict_video[step]), axis=None))
+        st.append(np.std(predict_video[step]))
+        
+#     diff = np.sum(abs(ground_truth_video - predict_video), axis=(1,2,3))
+    diff = np.sum(abs(ground_truth_video - predict_video), axis=(1,2))
+    std = np.std(predict_video)
     ground_truth_video = np.uint8((ground_truth_video * 1.0 + 0.5) * 255)
     predict_video = np.uint8((predict_video * 1.0 + 0.5) * 255)
     render_video = np.concatenate((ground_truth_video, predict_video), axis=1)
@@ -172,11 +199,9 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
         gt_name = os.path.join(model_dir, '{:05d}_gt.png'.format(step))
         pred_name = os.path.join(model_dir, '{:05d}_pred.png'.format(step))
 
-
-        im_render = Image.fromarray(np.squeeze(render_video[step], -1) , 'L').convert('RGB')
-        gt_im = Image.fromarray(np.squeeze(ground_truth_video[step],-1), 'L').convert('RGB')
-        pred_im = Image.fromarray(np.squeeze(predict_video[step],-1), 'L').convert('RGB')
-
+        im_render = Image.fromarray(render_video[step], 'L').convert('RGB')
+        gt_im = Image.fromarray(ground_truth_video[step], 'L').convert('RGB')
+        pred_im = Image.fromarray(predict_video[step], 'L').convert('RGB')
         
         gt_draw = ImageDraw.Draw(gt_im)
         pred_draw = ImageDraw.Draw(pred_im)
@@ -186,6 +211,8 @@ def train(model, train_dataloader, epochs, lr, steps_til_summary, epochs_til_che
         im_render.save(im_name)
         gt_im.save(gt_name)
         pred_im.save(pred_name)
+    
+    return log_pred, log_gt, d, st
 
 
 class LinearDecaySchedule():
